@@ -11,22 +11,22 @@ const VERTICES: &[Vertex] = &[
     // Top left 0
     Vertex {
         position: [-1.0, 1.0, 0.0],
-        color: [0.7, 0.0, 0.0],
+        tex_coords: [0.0, 0.0],
     },
     // Top right 1
     Vertex {
         position: [1.0, 1.0, 0.0],
-        color: [0.3, 0.0, 0.0],
+        tex_coords: [1.0, 0.0],
     },
     // Bottom left 2
     Vertex {
         position: [-1.0, -1.0, 0.0],
-        color: [0.0, 0.2, 0.0],
+        tex_coords: [0.0, 1.0],
     },
     // Bottom right 3
     Vertex {
         position: [1.0, -1.0, 0.0],
-        color: [0.0, 0.2, 0.0],
+        tex_coords: [1.0, 1.0],
     },
 ];
 
@@ -39,7 +39,7 @@ const INDICES: &[u16] = &[0, 2, 3, 0, 3, 1];
 #[derive(Debug, Clone, Copy)]
 pub struct Vertex {
     position: [f32; 3],
-    color: [f32; 3],
+    tex_coords: [f32; 2],
 }
 
 impl Vertex {
@@ -56,7 +56,7 @@ impl Vertex {
                 wgpu::VertexAttributeDescriptor {
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float3,
+                    format: wgpu::VertexFormat::Float2,
                 },
             ],
         }
@@ -123,7 +123,7 @@ impl State {
         // -----------------------------------------------------------------------------
         //     - Texture -
         // -----------------------------------------------------------------------------
-        let diffuse_bytes = include_bytes!("../textures/supertexture.png");
+        let diffuse_bytes = include_bytes!("../textures/nightmare.png");
         let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
         let diffuse_rgba = diffuse_image.as_rgba8().unwrap();
         use image::GenericImageView;
