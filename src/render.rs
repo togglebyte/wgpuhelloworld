@@ -20,20 +20,20 @@ pub struct Vertex {
 }
 
 impl Vertex {
-    fn desc<'a>() -> wgpu::VertexBufferDescriptor<'a> {
-        wgpu::VertexBufferDescriptor {
-            stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
             step_mode: wgpu::InputStepMode::Vertex,
             attributes: &[
-                wgpu::VertexAttributeDescriptor {
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float3,
                     offset: 0,
                     shader_location: 0,
-                    format: wgpu::VertexFormat::Float3,
                 },
-                wgpu::VertexAttributeDescriptor {
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float2,
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float2,
                 },
             ],
         }
@@ -196,6 +196,16 @@ impl Renderer {
 //     Maybe absolute nonsense:
 //     Device -> [ Queue -> SwapChain -> RenderPipeline -> Surface ]
 // -----------------------------------------------------------------------------
+
+fn color_target_state() -> wgpu::ColorTargetState {
+    wgpu::ColorTargetState {
+        format: wgpu::TextureFormat::Bgra8UnormSrgb,
+        color_blend: wgpu::BlendState::REPLACE,
+        alpha_blend: wgpu::BlendState::REPLACE,
+        write_mask: wgpu::ColorWrite::ALL,
+    }
+}
+
 struct State {
     surface: wgpu::Surface,
     device: wgpu::Device,
@@ -218,7 +228,7 @@ impl State {
         let surface = unsafe { instance.create_surface(window) };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::Default,
+                power_preference: wgpu::PowerPreference::HighPerformance, //TODO: make this a setting
                 compatible_surface: Some(&surface),
             })
             .await
@@ -227,9 +237,10 @@ impl State {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
+                    label: None,
                     features: wgpu::Features::empty(),
                     limits: wgpu::Limits::default(),
-                    shader_validation: true,
+                    // shader_validation: true, // TODO: where does this go now?
                 },
                 None,
             )
@@ -237,7 +248,7 @@ impl State {
             .unwrap();
 
         let sc_desc = wgpu::SwapChainDescriptor {
-            usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT,
+            usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
             format: wgpu::TextureFormat::Bgra8UnormSrgb,
             width: size.width,
             height: size.height,
@@ -319,17 +330,20 @@ impl State {
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility: wgpu::ShaderStage::FRAGMENT,
-                        ty: wgpu::BindingType::SampledTexture {
+                        ty: wgpu::BindingType::Texture {
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
                             multisampled: false,
-                            dimension: wgpu::TextureViewDimension::D2,
-                            component_type: wgpu::TextureComponentType::Uint,
                         },
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStage::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler { comparison: false },
+                        ty: wgpu::BindingType::Sampler {
+                            comparison: false,
+                            filtering: false,
+                        },
                         count: None,
                     },
                 ],
@@ -354,8 +368,8 @@ impl State {
         // -----------------------------------------------------------------------------
         //     - Shader bits -
         // -----------------------------------------------------------------------------
-        let vs_module = device.create_shader_module(wgpu::include_spirv!("shader.vert.spv"));
-        let fs_module = device.create_shader_module(wgpu::include_spirv!("shader.frag.spv"));
+        let vs_module = device.create_shader_module(&wgpu::include_spirv!("shader.vert.spv"));
+        let fs_module = device.create_shader_module(&wgpu::include_spirv!("shader.frag.spv"));
 
         // buffer business
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -447,6 +461,7 @@ impl State {
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
                 color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
                     attachment: &frame.view,
                     resolve_target: None,
@@ -466,7 +481,7 @@ impl State {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
 
@@ -493,37 +508,63 @@ fn create_pipeline(
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Pipeline omg pipeline (render okay)"),
         layout: Some(&render_pipeline_layout),
-        vertex_stage: wgpu::ProgrammableStageDescriptor {
+        vertex: wgpu::VertexState {
             module: &vs_module,
             entry_point: "main",
+            buffers: &[Vertex::desc()],
         },
-        fragment_stage: Some(wgpu::ProgrammableStageDescriptor {
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            cull_mode: Some(wgpu::Face::Back),
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        fragment: Some(wgpu::FragmentState {
             module: &fs_module,
             entry_point: "main",
-        }),
-        rasterization_state: Some(wgpu::RasterizationStateDescriptor {
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: wgpu::CullMode::Back,
-            depth_bias: 0,
-            depth_bias_slope_scale: 0.0,
-            depth_bias_clamp: 0.0,
-            clamp_depth: false,
-        }),
-        color_states: &[wgpu::ColorStateDescriptor {
-            format: sc_desc.format,
-            color_blend: wgpu::BlendDescriptor::REPLACE,
-            alpha_blend: wgpu::BlendDescriptor::REPLACE,
-            write_mask: wgpu::ColorWrite::ALL,
-        }],
-        primitive_topology: wgpu::PrimitiveTopology::TriangleList,
-        depth_stencil_state: None,
-        vertex_state: wgpu::VertexStateDescriptor {
-            index_format: wgpu::IndexFormat::Uint16,
-            vertex_buffers: &[Vertex::desc()],
-        },
-        sample_count: 1,
-        sample_mask: !0,
-        alpha_to_coverage_enabled: false,
+            targets: &[color_target_state()], //TODO finish
+        })
+
+
+
+        // vertex_stage: wgpu::ProgrammableStageDescriptor {
+        //     module: &vs_module,
+        //     entry_point: "main",
+        // },
+        // fragment_stage: Some(wgpu::ProgrammableStageDescriptor {
+        //     module: &fs_module,
+        //     entry_point: "main",
+        // }),
+        // rasterization_state: Some(wgpu::RasterizationStateDescriptor {
+        //     front_face: wgpu::FrontFace::Ccw,
+        //     cull_mode: wgpu::CullMode::Back,
+        //     depth_bias: 0,
+        //     depth_bias_slope_scale: 0.0,
+        //     depth_bias_clamp: 0.0,
+        //     clamp_depth: false,
+        // }),
+        // color_states: &[wgpu::ColorStateDescriptor {
+        //     format: sc_desc.format,
+        //     color_blend: wgpu::BlendDescriptor::REPLACE,
+        //     alpha_blend: wgpu::BlendDescriptor::REPLACE,
+        //     write_mask: wgpu::ColorWrite::ALL,
+        // }],
+        // primitive_topology: wgpu::PrimitiveTopology::TriangleList,
+        // depth_stencil: None,
+        // vertex_state: wgpu::VertexStateDescriptor {
+        //     index_format: wgpu::IndexFormat::Uint16,
+            // vertex_buffers: &[Vertex::desc()],
+        // },
+        // sample_count: 1,
+        // sample_mask: !0,
+        // alpha_to_coverage_enabled: false,
     });
 
     render_pipeline
