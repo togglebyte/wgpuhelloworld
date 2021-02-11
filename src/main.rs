@@ -7,6 +7,53 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+#[derive(Debug, Copy, Clone)] 
+struct Pixel {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+}
+
+impl Pixel {
+    fn bytes(&self) -> Vec<u8> {
+        vec![self.r, self.g, self.b, self.a]
+    }
+
+    fn red() -> Self {
+        Pixel {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 128,
+        }
+    }
+
+    fn blue() -> Self {
+        Pixel {
+            r: 0,
+            g: 0,
+            b: 255,
+            a: 128,
+        }
+    }
+}
+
+struct Layer {
+    texture: wgpu::Texture,
+    width: u32,
+    height: u32,
+    texture_size: wgpu::Extent3d,
+}
+
+fn red() -> Vec<Pixel> {
+    vec![Pixel::red(); 262144 / 4]
+}
+
+fn blue() -> Vec<Pixel> {
+    vec![Pixel::blue(); 262144 / 4]
+}
+
 const VERTICES: &[Vertex] = &[
     // Top left 0
     Vertex {
@@ -83,6 +130,7 @@ struct State {
     index_buffer: wgpu::Buffer,
     num_indices: u32,
     diffuse_bind_group: wgpu::BindGroup,
+    layers: Vec<Layer>,
 }
 
 impl State {
@@ -123,9 +171,11 @@ impl State {
         // -----------------------------------------------------------------------------
         //     - Texture -
         // -----------------------------------------------------------------------------
-        let diffuse_bytes = include_bytes!("../textures/nightmare.png");
+        let diffuse_bytes = include_bytes!("../textures/supertexture.png");
         let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
         let diffuse_rgba = diffuse_image.as_rgba8().unwrap();
+        // let diffuse_rgba = red().into_iter().map(|p| p.bytes().into_iter()).flatten().collect::<Vec<_>>();
+
         use image::GenericImageView;
         let (width, height) = diffuse_image.dimensions();
         let texture_size = wgpu::Extent3d {
@@ -162,11 +212,25 @@ impl State {
         let diffuse_texture_view =
             diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // let layer_one_texture_view =
+        //     layer_one_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let layer_one = Layer {
+            width,
+            height,
+            texture: diffuse_texture,
+            texture_size: wgpu::Extent3d {
+                width: width,
+                height: height,
+                depth: 1,
+            }
+        };
+
         let diffuse_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
@@ -252,6 +316,7 @@ impl State {
             index_buffer,
             num_indices: INDICES.len() as u32,
             diffuse_bind_group,
+            layers: vec![layer_one],
         }
     }
 
@@ -266,9 +331,31 @@ impl State {
         false
     }
 
-    fn update(&mut self) {}
+    fn update(&mut self) {
+        let mut diffuse_rgba = blue().into_iter().map(|p| p.bytes()).flatten().collect::<Vec<_>>();
+        let index = diffuse_rgba.len() / 2;
+        diffuse_rgba.iter_mut().skip(index).map(|p| *p = 255).collect::<Vec<_>>();
+
+        let layer = &self.layers[0];
+
+        self.queue.write_texture(
+            wgpu::TextureCopyView {
+                texture: &layer.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+            },
+            diffuse_rgba.as_slice(),
+            wgpu::TextureDataLayout {
+                offset: 0,
+                bytes_per_row: 4 * layer.width,
+                rows_per_image: layer.height,
+            },
+            layer.texture_size,
+        );
+    }
 
     fn render(&mut self) {
+
         let frame = self
             .swap_chain
             .get_current_frame()
@@ -288,9 +375,9 @@ impl State {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
                             a: 1.0,
                         }),
                         store: true,
@@ -307,7 +394,6 @@ impl State {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        // self.queue.submit(Some(encoder.finish()));
     }
 }
 
