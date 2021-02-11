@@ -1,3 +1,5 @@
+use std::ops::{Deref, DerefMut};
+
 use futures::executor::block_on;
 use wgpu::util::DeviceExt;
 use winit::{
@@ -6,80 +8,6 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowBuilder},
 };
-
-mod render;
-
-#[derive(Debug, Copy, Clone)]
-struct Pixel {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-}
-
-impl Pixel {
-    fn bytes(&self) -> Vec<u8> {
-        vec![self.r, self.g, self.b, self.a]
-    }
-
-    fn red() -> Self {
-        Pixel {
-            r: 255,
-            g: 0,
-            b: 0,
-            a: 128,
-        }
-    }
-
-    fn blue() -> Self {
-        Pixel {
-            r: 0,
-            g: 0,
-            b: 255,
-            a: 128,
-        }
-    }
-}
-
-struct Layer {
-    texture: wgpu::Texture,
-    width: u32,
-    height: u32,
-    texture_size: wgpu::Extent3d,
-}
-
-fn red() -> Vec<Pixel> {
-    vec![Pixel::red(); 262144 / 4]
-}
-
-fn blue() -> Vec<Pixel> {
-    vec![Pixel::blue(); 262144 / 4]
-}
-
-const VERTICES: &[Vertex] = &[
-    // Top left 0
-    Vertex {
-        position: [-1.0, 1.0, 0.0],
-        tex_coords: [0.0, 0.0],
-    },
-    // Top right 1
-    Vertex {
-        position: [1.0, 1.0, 0.0],
-        tex_coords: [1.0, 0.0],
-    },
-    // Bottom left 2
-    Vertex {
-        position: [-1.0, -1.0, 0.0],
-        tex_coords: [0.0, 1.0],
-    },
-    // Bottom right 3
-    Vertex {
-        position: [1.0, -1.0, 0.0],
-        tex_coords: [1.0, 1.0],
-    },
-];
-
-const INDICES: &[u16] = &[0, 2, 3, 0, 3, 1];
 
 // -----------------------------------------------------------------------------
 //     - Vertex-
@@ -114,6 +42,154 @@ impl Vertex {
 
 unsafe impl bytemuck::Pod for Vertex {}
 unsafe impl bytemuck::Zeroable for Vertex {}
+
+// -----------------------------------------------------------------------------
+//     - Square -
+//     Drawing area
+// -----------------------------------------------------------------------------
+const VERTICES: &[Vertex] = &[
+    // Top left 0
+    Vertex {
+        position: [-1.0, 1.0, 0.0],
+        tex_coords: [0.0, 0.0],
+    },
+    // Top right 1
+    Vertex {
+        position: [1.0, 1.0, 0.0],
+        tex_coords: [1.0, 0.0],
+    },
+    // Bottom left 2
+    Vertex {
+        position: [-1.0, -1.0, 0.0],
+        tex_coords: [0.0, 1.0],
+    },
+    // Bottom right 3
+    Vertex {
+        position: [1.0, -1.0, 0.0],
+        tex_coords: [1.0, 1.0],
+    },
+];
+
+const INDICES: &[u16] = &[0, 2, 3, 0, 3, 1];
+
+// -----------------------------------------------------------------------------
+//     - Layer -
+// -----------------------------------------------------------------------------
+struct Layer {
+    texture: wgpu::Texture,
+    width: u32,
+    height: u32,
+    texture_size: wgpu::Extent3d,
+}
+
+// -----------------------------------------------------------------------------
+//     - Pixel -
+// -----------------------------------------------------------------------------
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+pub struct Pixel {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl Pixel {
+    fn black() -> Self {
+        Self {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        }
+    }
+}
+
+unsafe impl bytemuck::Pod for Pixel {}
+unsafe impl bytemuck::Zeroable for Pixel {}
+
+// -----------------------------------------------------------------------------
+//     - Pixel buffer -
+// -----------------------------------------------------------------------------
+pub struct PixelBuffer {
+    inner: Vec<Pixel>,
+}
+
+impl PixelBuffer {
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            inner: (0..cap).map(|_| Pixel::black()).collect(),
+        }
+    }
+
+    pub fn flap(&mut self, index: usize) -> &mut Pixel {
+        &mut self.inner[index]
+    }
+}
+
+impl Deref for PixelBuffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        bytemuck::cast_slice(&self.inner)
+    }
+}
+
+impl DerefMut for PixelBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        bytemuck::cast_slice_mut(&mut self.inner)
+    }
+}
+
+// -----------------------------------------------------------------------------
+//     - Renderer -
+// -----------------------------------------------------------------------------
+pub struct Renderer {
+    pixels: PixelBuffer,
+    state: State,
+}
+
+impl Renderer {
+    pub fn pixels(&mut self) -> &mut PixelBuffer {
+        &mut self.pixels
+    }
+
+    pub fn draw(&mut self) {
+        let layer = &self.state.layers[0];
+
+        self.state.queue.write_texture(
+            wgpu::TextureCopyView {
+                texture: &layer.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+            },
+            &self.pixels,
+            wgpu::TextureDataLayout {
+                offset: 0,
+                bytes_per_row: 4 * layer.width,
+                rows_per_image: layer.height,
+            },
+            layer.texture_size,
+        );
+    }
+
+    pub fn render(&mut self) {
+        self.state.render();
+    }
+
+    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        self.state.resize(new_size);
+    }
+
+    pub fn new(w: usize, h: usize, window: &Window) -> Self {
+        let pixel_count = w * h;
+
+        Self {
+            pixels: PixelBuffer::with_capacity(pixel_count),
+            state: block_on(State::new(window)),
+        }
+    }
+}
 
 // -----------------------------------------------------------------------------
 //     - State-
@@ -173,13 +249,15 @@ impl State {
         // -----------------------------------------------------------------------------
         //     - Texture -
         // -----------------------------------------------------------------------------
-        let diffuse_bytes = include_bytes!("../textures/supertexture.png");
-        let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
-        let diffuse_rgba = diffuse_image.as_rgba8().unwrap();
+        // let diffuse_bytes = include_bytes!("../textures/supertexture.png");
+        // let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
+        // let diffuse_rgba = diffuse_image.as_rgba8().unwrap();
         // let diffuse_rgba = red().into_iter().map(|p| p.bytes().into_iter()).flatten().collect::<Vec<_>>();
 
+        let diffuse_rgba = PixelBuffer::with_capacity(128 * 128);
+
         use image::GenericImageView;
-        let (width, height) = diffuse_image.dimensions();
+        let (width, height) = (128, 128); // diffuse_image.dimensions();
         let texture_size = wgpu::Extent3d {
             width,
             height,
@@ -202,7 +280,7 @@ impl State {
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
             },
-            diffuse_rgba,
+            &diffuse_rgba,
             wgpu::TextureDataLayout {
                 offset: 0,
                 bytes_per_row: 4 * width,
@@ -213,9 +291,6 @@ impl State {
 
         let diffuse_texture_view =
             diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // let layer_one_texture_view =
-        //     layer_one_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let layer_one = Layer {
             width,
@@ -333,35 +408,28 @@ impl State {
         false
     }
 
-    fn update(&mut self) {
-        let mut diffuse_rgba = blue()
-            .into_iter()
-            .map(|p| p.bytes())
-            .flatten()
-            .collect::<Vec<_>>();
-        let index = diffuse_rgba.len() / 2;
-        diffuse_rgba
-            .iter_mut()
-            .skip(index)
-            .map(|p| *p = 255)
-            .collect::<Vec<_>>();
+    fn draw(&mut self) {
+        // let diffuse_rgba = PixelBuffer::with_capacity();
+        // let mut diffuse_rgba = blue().into_iter().map(|p| p.bytes()).flatten().collect::<Vec<_>>();
+        // let index = diffuse_rgba.len() / 2;
+        // diffuse_rgba.iter_mut().skip(index).map(|p| *p = 255).collect::<Vec<_>>();
 
-        let layer = &self.layers[0];
+        // let layer = &self.layers[0];
 
-        self.queue.write_texture(
-            wgpu::TextureCopyView {
-                texture: &layer.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-            },
-            diffuse_rgba.as_slice(),
-            wgpu::TextureDataLayout {
-                offset: 0,
-                bytes_per_row: 4 * layer.width,
-                rows_per_image: layer.height,
-            },
-            layer.texture_size,
-        );
+        // self.queue.write_texture(
+        //     wgpu::TextureCopyView {
+        //         texture: &layer.texture,
+        //         mip_level: 0,
+        //         origin: wgpu::Origin3d::ZERO,
+        //     },
+        //     diffuse_rgba.as_slice(),
+        //     wgpu::TextureDataLayout {
+        //         offset: 0,
+        //         bytes_per_row: 4 * layer.width,
+        //         rows_per_image: layer.height,
+        //     },
+        //     layer.texture_size,
+        // );
     }
 
     fn render(&mut self) {
@@ -406,6 +474,9 @@ impl State {
     }
 }
 
+// -----------------------------------------------------------------------------
+//     - Create pipeline -
+// -----------------------------------------------------------------------------
 fn create_pipeline(
     device: &wgpu::Device,
     sc_desc: &wgpu::SwapChainDescriptor,
@@ -456,72 +527,4 @@ fn create_pipeline(
     });
 
     render_pipeline
-}
-
-// -----------------------------------------------------------------------------
-//     - Main-
-// -----------------------------------------------------------------------------
-fn main() {
-    let event_loop = EventLoop::new();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
-
-    // let mut state = block_on(State::new(&window));
-
-    let mut renderer = render::Renderer::new(128, 128, &window);
-
-    let mut x = 128 / 2;
-    let mut y = 64 * 128;
-
-    event_loop.run(move |event, _, control_flow| {
-        match event {
-            Event::RedrawRequested(_) => {
-                let pixels = renderer.pixels();
-
-                let old = pixels.flap(x + 1 + y);
-                old.r = 0;
-
-                let new = pixels.flap(x + y);
-                new.r = 255;
-
-                renderer.draw();
-            }
-            Event::MainEventsCleared => {
-                window.request_redraw();
-                renderer.render();
-            }
-            Event::WindowEvent { ref event, .. } => {
-                match event {
-                    WindowEvent::Resized(physical_size) => {
-                        renderer.resize(*physical_size);
-                    }
-                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                        renderer.resize(**new_inner_size);
-                    }
-                    WindowEvent::KeyboardInput { input, .. } => {
-                        match input {
-                            KeyboardInput {
-                                state: ElementState::Pressed,
-                                virtual_keycode: Some(VirtualKeyCode::Escape),
-                                ..
-                            } => {
-                                // we can finally quit
-                                *control_flow = ControlFlow::Exit;
-                            }
-                            KeyboardInput {
-                                state: ElementState::Pressed,
-                                virtual_keycode: Some(VirtualKeyCode::H),
-                                ..
-                            } => {
-                                x -= 1;
-                                // left
-                            }
-                            _ => {}
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    });
 }
